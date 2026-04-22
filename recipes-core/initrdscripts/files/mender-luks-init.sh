@@ -16,6 +16,17 @@ ln -s /proc/self/fd /dev/fd
 
 exec <$CONSOLE >$CONSOLE 2>$CONSOLE
 
+# Start udevd to populate /dev/disk/by-partuuid/ symlinks
+UDEV_DAEMON=""
+for o in /sbin/udevd /lib/udev/udevd /lib/systemd/systemd-udevd; do
+  [ -x "$o" ] && { UDEV_DAEMON="$o"; break; }
+done
+if [ -n "$UDEV_DAEMON" ]; then
+  $UDEV_DAEMON --daemon
+  udevadm trigger --action=add
+  udevadm settle
+fi
+
 ################################################################################
 fatal() {
   echo "$@" && echo ""
@@ -46,12 +57,6 @@ BOOT_DEV=@@MENDER_BOOT_PART@@
 
 DATA_MNT="$MNT_DIR@@MENDER_DATA_PART_MOUNT_LOCATION@@"
 DATA_DEV=@@MENDER_DATA_PART@@
-
-if [[ "@@MENDER/LUKS_PARTUUID_IS_USED@@" == "1" ]]; then
-  BOOT_DEV=$(findfs PARTUUID="$(basename @@MENDER_BOOT_PART@@)")
-  # This is currently ununsed
-  DATA_DEV=$(findfs PARTUUID="$(basename @@MENDER_DATA_PART@@)")
-fi
 
 ROOT_DM_NAME=""
 ROOT_HEADER=""
@@ -121,6 +126,13 @@ unlock_luks_partitions() {
 ################################################################################
 mkdir -p                          "$BOOT_MNT"
 wait_for_block_device "$BOOT_DEV"
+
+if [[ "@@MENDER/LUKS_PARTUUID_IS_USED@@" == "1" ]]; then
+  BOOT_DEV=$(findfs PARTUUID="$(basename @@MENDER_BOOT_PART@@)")
+  # This is currently ununsed
+  DATA_DEV=$(findfs PARTUUID="$(basename @@MENDER_DATA_PART@@)")
+fi
+
 mount                 "$BOOT_DEV" "$BOOT_MNT"
 
 read_args && map_root_dev && unlock_luks_partitions
@@ -128,5 +140,12 @@ read_args && map_root_dev && unlock_luks_partitions
 mkdir -p                          "$ROOT_MNT"
 wait_for_block_device "$ROOT_DEV"
 mount                 "$ROOT_DEV" "$ROOT_MNT"
+
+# Stop udevd before switching root
+if [ -n "$UDEV_DAEMON" ]; then
+  udevadm settle
+  killall "$(basename $UDEV_DAEMON)" 2>/dev/null
+fi
+
 cd                                "$ROOT_MNT"
 exec switch_root                  "$ROOT_MNT" /sbin/init
